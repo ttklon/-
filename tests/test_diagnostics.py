@@ -79,7 +79,8 @@ class PcInventoryTests(unittest.TestCase):
     def test_real_windows_inventory_without_printing_private_data(self):
         data = diagnostics.pc_inventory()
         self.assertIsInstance(data['Devices'], list)
-        self.assertTrue(data.get('OS') or data.get('Warnings'))
+        self.assertGreater(len(data['Devices']), 0, 'PnP device collection failed on the Windows runner')
+        self.assertIsNotNone(data.get('OS'), 'Windows version collection failed on the Windows runner')
         self.assertNotIn('SerialNumber', json.dumps(data))
         self.assertNotIn('InstanceId', json.dumps(data))
         self.assertNotIn('MacAddress', json.dumps(data))
