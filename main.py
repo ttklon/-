@@ -5,6 +5,7 @@ from tkinter import messagebox, filedialog
 
 from diagnostics import windows_devices, compare, report, pc_inventory, pc_report
 from clipboard_win import copy_text
+from usb_hubs import windows_hubs, hub_report
 
 BG = '#101321'
 PANEL = '#1b2033'
@@ -31,7 +32,9 @@ class App(tk.Tk):
         self.label(panel, 'Компоненты и устройства всех классов, включая отключённые. Отчёт никуда не отправляется.',
                    10, MUTED, justify='left').pack(anchor='w', pady=(4, 6))
         self.inventory_btn = self.button(panel, 'Собрать сведения о компьютере', self.inventory, '#8068ee')
-        self.inventory_btn.pack(anchor='w', pady=(0, 10))
+        self.inventory_btn.pack(anchor='w', pady=(0, 3))
+        self.hubs_btn = self.button(panel, 'Проверить возможности USB-портов (без отключения)', self.hubs, '#3a4260')
+        self.hubs_btn.pack(anchor='w', pady=(0, 10))
         self.label(panel, 'Дополнительно: проверка USB кресла', 12, WHITE, True).pack(anchor='w')
         self.label(panel, '1. Отключите USB кресла от компьютера.\n'
                           '2. Нажмите «Снимок без кресла» и дождитесь завершения.\n'
@@ -72,7 +75,7 @@ class App(tk.Tk):
 
     def run_scan(self, callback, operation=windows_devices):
         self.snapshot_btn.configure(state='disabled'); self.compare_btn.configure(state='disabled')
-        self.inventory_btn.configure(state='disabled')
+        self.inventory_btn.configure(state='disabled'); self.hubs_btn.configure(state='disabled')
         self.status.configure(text='Получаем сведения Windows, подождите…')
         future = self.pool.submit(operation)
         def done(f):
@@ -90,6 +93,17 @@ class App(tk.Tk):
             self.output.see('1.0')
             self.status.configure(text='Готово. Проверьте отчёт, затем скопируйте или сохраните его.')
         self.run_scan(done, pc_inventory)
+
+    def hubs(self):
+        def done(data, error):
+            if error:
+                self.status.configure(text='Проверка USB-концентраторов не выполнена.')
+                messagebox.showerror('Ошибка', error); return
+            self.output.delete('1.0', 'end')
+            self.output.insert('1.0', hub_report(data))
+            self.output.see('1.0')
+            self.status.configure(text='Проверка завершена без отключения USB. Скопируйте или сохраните отчёт.')
+        self.run_scan(done, windows_hubs)
 
     def snapshot(self):
         def done(devices, error):
@@ -117,7 +131,7 @@ class App(tk.Tk):
             while True:
                 callback, data, error = self.events.get_nowait()
                 self.snapshot_btn.configure(state='normal')
-                self.inventory_btn.configure(state='normal')
+                self.inventory_btn.configure(state='normal'); self.hubs_btn.configure(state='normal')
                 callback(data, error)
                 self.compare_btn.configure(state='normal' if self.before is not None else 'disabled')
         except queue.Empty: pass
