@@ -9,6 +9,14 @@ def copy_text(text, hwnd):
         raise OSError('Буфер обмена Windows недоступен.')
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                       wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                       wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, ctypes.c_void_p]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.DestroyWindow.restype = wintypes.BOOL
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
     user32.OpenClipboard.argtypes = [wintypes.HWND]
     user32.OpenClipboard.restype = wintypes.BOOL
     user32.EmptyClipboard.restype = wintypes.BOOL
@@ -29,13 +37,20 @@ def copy_text(text, hwnd):
         raise ctypes.WinError(ctypes.get_last_error())
     transferred = False
     opened = False
+    # Tk clears clipboard data owned by its own window on shutdown. Use an
+    # independent native window, so copied text survives the Tk app closing.
+    owner = user32.CreateWindowExW(0, 'STATIC', '', 0, 0, 0, 0, 0, None, None,
+                                   kernel32.GetModuleHandleW(None), None)
+    if not owner:
+        kernel32.GlobalFree(handle)
+        raise ctypes.WinError(ctypes.get_last_error())
     try:
         ptr = kernel32.GlobalLock(handle)
         if not ptr:
             raise ctypes.WinError(ctypes.get_last_error())
         ctypes.memmove(ptr, payload, len(payload))
         kernel32.GlobalUnlock(handle)
-        if not user32.OpenClipboard(hwnd):
+        if not user32.OpenClipboard(owner):
             raise OSError('Буфер обмена занят другой программой. Попробуйте ещё раз.')
         opened = True
         if not user32.EmptyClipboard():
@@ -48,3 +63,4 @@ def copy_text(text, hwnd):
             user32.CloseClipboard()
         if not transferred:
             kernel32.GlobalFree(handle)
+        user32.DestroyWindow(owner)
