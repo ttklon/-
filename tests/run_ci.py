@@ -1,5 +1,9 @@
 """Run tests and surface failure messages as GitHub annotations."""
 import unittest
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 suite = unittest.defaultTestLoader.discover('tests')
 result = unittest.TextTestRunner(verbosity=2).run(suite)
