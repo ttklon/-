@@ -56,6 +56,18 @@ class PcInventoryTests(unittest.TestCase):
         for value in ('SUPERSECRET', 'BOARDSECRET', 'SERIAL-SECRET', 'SECRETUSER', 'AA:BB:CC:DD:EE:FF'):
             self.assertNotIn(value, text)
 
+    def test_full_report_includes_components_and_all_devices(self):
+        data = {'System': {'Model': 'Model X'}, 'Devices': [
+            {'Class': 'Bluetooth', 'Name': 'Radio 1', 'Present': True},
+            {'Class': 'Monitor', 'Name': 'Display 2', 'Present': False}],
+            'BIOS': {'SMBIOSBIOSVersion': 'V1'}, 'RAM': [{'PartNumber': 'MEMORY-TEST'}],
+            'GPU': [{'Name': 'GPU-TEST'}], 'Disks': [{'Model': 'DISK-TEST'}]}
+        text = diagnostics.pc_report(data)
+        for value in ('Radio 1', 'Display 2', 'Подключено: да', 'Подключено: нет',
+                      'MEMORY-TEST', 'GPU-TEST', 'DISK-TEST', 'V1'):
+            self.assertIn(value, text)
+        self.assertIn('PLUG AND PLAY: 2', text)
+
     @patch('diagnostics.sys.platform', 'win32')
     @patch('diagnostics.subprocess.run')
     def test_inventory_parses_valid_data(self, run):
@@ -72,7 +84,7 @@ class PcInventoryTests(unittest.TestCase):
     @patch('diagnostics.sys.platform', 'win32')
     @patch('diagnostics.subprocess.run')
     def test_inventory_timeout_is_an_error(self, run):
-        run.side_effect = subprocess.TimeoutExpired('powershell', 90)
+        run.side_effect = subprocess.TimeoutExpired('powershell', 180)
         with self.assertRaises(RuntimeError): diagnostics.pc_inventory()
 
     @unittest.skipUnless(sys.platform == 'win32', 'Requires real Windows CIM and PnP')
@@ -84,5 +96,25 @@ class PcInventoryTests(unittest.TestCase):
         self.assertNotIn('SerialNumber', json.dumps(data))
         self.assertNotIn('InstanceId', json.dumps(data))
         self.assertNotIn('MacAddress', json.dumps(data))
+
+@unittest.skipUnless(sys.platform == 'win32', 'Requires Windows clipboard and Tk')
+class WindowsClipboardTests(unittest.TestCase):
+    def test_copy_unicode_survives_window_close(self):
+        import tkinter as tk
+        from clipboard_win import copy_text
+        root = tk.Tk()
+        root.withdraw()
+        root.update()
+        text = 'Отчёт по устройствам\nHello USB'
+        try:
+            copy_text(text, root.winfo_id())
+        finally:
+            root.destroy()
+        reader = tk.Tk()
+        reader.withdraw()
+        try:
+            self.assertEqual(reader.clipboard_get().replace('\r\n', '\n'), text)
+        finally:
+            reader.destroy()
 
 if __name__ == '__main__': unittest.main()

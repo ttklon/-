@@ -58,45 +58,57 @@ def report(new):
 PC_INVENTORY_SCRIPT = r'''
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 $ErrorActionPreference = 'Stop'
-$result = [ordered]@{ System = $null; Board = $null; OS = $null; CPU = @(); Devices = @(); Warnings = @() }
-try {
-    $result.System = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model
-} catch { $result.Warnings += 'Не удалось получить модель компьютера.' }
-try {
-    $result.Board = Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer, Product
-} catch { $result.Warnings += 'Не удалось получить модель материнской платы.' }
-try {
-    $result.OS = Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture
-} catch { $result.Warnings += 'Не удалось получить версию Windows.' }
-try {
-    $result.CPU = @(Get-CimInstance Win32_Processor | Select-Object Name)
-} catch { $result.Warnings += 'Не удалось получить модель процессора.' }
+$result = [ordered]@{ System = $null; Board = $null; OS = $null; BIOS = $null;
+    CPU = @(); RAM = @(); GPU = @(); Disks = @(); Devices = @(); Warnings = @() }
+try { $result.System = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,SystemType,TotalPhysicalMemory }
+catch { $result.Warnings += 'Не удалось получить сведения о компьютере.' }
+try { $result.Board = Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer,Product,Version }
+catch { $result.Warnings += 'Не удалось получить сведения о материнской плате.' }
+try { $result.OS = Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture }
+catch { $result.Warnings += 'Не удалось получить версию Windows.' }
+try { $result.BIOS = Get-CimInstance Win32_BIOS | Select-Object Manufacturer,SMBIOSBIOSVersion,ReleaseDate }
+catch { $result.Warnings += 'Не удалось получить сведения о BIOS.' }
+try { $result.CPU = @(Get-CimInstance Win32_Processor | Select-Object Name,Manufacturer,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed) }
+catch { $result.Warnings += 'Не удалось получить сведения о процессоре.' }
+try { $result.RAM = @(Get-CimInstance Win32_PhysicalMemory | Select-Object Manufacturer,PartNumber,Capacity,Speed,ConfiguredClockSpeed,DeviceLocator) }
+catch { $result.Warnings += 'Не удалось получить сведения об оперативной памяти.' }
+try { $result.GPU = @(Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM,DriverVersion,VideoProcessor) }
+catch { $result.Warnings += 'Не удалось получить сведения о видеокартах.' }
+try { $result.Disks = @(Get-CimInstance Win32_DiskDrive | Select-Object Model,Size,InterfaceType,MediaType,FirmwareRevision) }
+catch { $result.Warnings += 'Не удалось получить сведения о накопителях.' }
 $drivers = @{}
 try {
     foreach ($driver in @(Get-CimInstance Win32_PnPSignedDriver)) {
-        if ($driver.DeviceID -and -not $drivers.ContainsKey($driver.DeviceID)) {
-            $drivers[$driver.DeviceID] = $driver
-        }
+        if ($driver.DeviceID -and -not $drivers.ContainsKey($driver.DeviceID)) { $drivers[$driver.DeviceID] = $driver }
     }
 } catch { $result.Warnings += 'Не удалось получить версии драйверов.' }
+$present = @{}
+$presentKnown = $false
 try {
-    $selected = @('Bluetooth', 'Net', 'USB', 'USBDevice', 'Ports', 'HIDClass', 'Unknown')
-    $devices = @(Get-PnpDevice -PresentOnly | Where-Object { $_.Class -in $selected -or -not $_.Class })
+    foreach ($d in @(Get-PnpDevice -PresentOnly)) { if ($d.InstanceId) { $present[$d.InstanceId] = $true } }
+    $presentKnown = $true
+} catch { $result.Warnings += 'Не удалось определить, какие устройства подключены сейчас.' }
+try {
+    $devices = @(Get-PnpDevice)
     $result.Devices = @(foreach ($device in $devices) {
         $hardware = ''
         if ($device.InstanceId -match '(?i)VID_([0-9a-f]{4})&PID_([0-9a-f]{4})') {
             $hardware = 'USB VID_' + $Matches[1].ToUpper() + '&PID_' + $Matches[2].ToUpper()
         } elseif ($device.InstanceId -match '(?i)VEN_([0-9a-f]{4})&DEV_([0-9a-f]{4})') {
             $hardware = 'PCI VEN_' + $Matches[1].ToUpper() + '&DEV_' + $Matches[2].ToUpper()
+            if ($device.InstanceId -match '(?i)SUBSYS_([0-9a-f]{8})') { $hardware += '&SUBSYS_' + $Matches[1].ToUpper() }
+        } elseif ($device.InstanceId -match '(?i)^ACPI\\([A-Z0-9_]{3,16})(?:\\|$)') {
+            $hardware = 'ACPI ' + $Matches[1].ToUpper()
         }
-        $driver = $drivers[$device.InstanceId]
+        $driver = if ($device.InstanceId) { $drivers[$device.InstanceId] } else { $null }
+        $isPresent = if ($presentKnown -and $device.InstanceId) { $present.ContainsKey($device.InstanceId) } else { $null }
         [ordered]@{ Class = $device.Class; Name = $device.FriendlyName; Status = $device.Status;
-                    Manufacturer = $device.Manufacturer; Hardware = $hardware;
+                    Present = $isPresent; Manufacturer = $device.Manufacturer; Hardware = $hardware;
                     DriverVersion = if ($driver) { $driver.DriverVersion } else { $null };
                     DriverProvider = if ($driver) { $driver.DriverProviderName } else { $null } }
     })
-} catch { $result.Warnings += 'Не удалось получить список устройств Plug and Play.' }
-$result | ConvertTo-Json -Depth 5 -Compress
+} catch { $result.Warnings += 'Не удалось получить полный список устройств Plug and Play.' }
+$result | ConvertTo-Json -Depth 6 -Compress
 '''
 
 
@@ -106,7 +118,7 @@ def pc_inventory():
         raise RuntimeError('Сбор сведений о компьютере работает только в Windows.')
     try:
         result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', PC_INVENTORY_SCRIPT],
-                                capture_output=True, encoding='utf-8', errors='replace', timeout=90,
+                                capture_output=True, encoding='utf-8', errors='replace', timeout=180,
                                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f'Не удалось собрать сведения Windows: {exc}') from exc
@@ -122,7 +134,7 @@ def pc_inventory():
 
 
 def pc_report(data):
-    """Format a whitelist of safe fields; redact MAC-shaped strings in names."""
+    """Format selected, non-secret fields and flag limitations."""
     import re
     def clean(value):
         if value is None or value == '':
@@ -133,27 +145,41 @@ def pc_report(data):
     def section(name):
         value = data.get(name)
         return value if isinstance(value, dict) else {}
-    system, board, os = section('System'), section('Board'), section('OS')
-    lines = ['CHAIRLIGHT — сведения о компьютере', '',
-             'Компьютер: ' + clean(system.get('Manufacturer')) + ' / ' + clean(system.get('Model')),
-             'Материнская плата: ' + clean(board.get('Manufacturer')) + ' / ' + clean(board.get('Product')),
-             'Windows: ' + ' / '.join(clean(os.get(k)) for k in ('Caption', 'Version', 'BuildNumber', 'OSArchitecture'))]
-    cpus = data.get('CPU') or []
-    if isinstance(cpus, dict): cpus = [cpus]
-    for cpu in cpus:
-        if isinstance(cpu, dict): lines.append('Процессор: ' + clean(cpu.get('Name')))
-    lines += ['', 'УСТРОЙСТВА: Bluetooth, сеть, USB, HID, порты и неопознанные',
-              '(Показано наличие, но это не доказывает совместимость с RF пульта.)', '']
-    devices = data.get('Devices') or []
+    def items(name):
+        value = data.get(name) or []
+        if isinstance(value, dict): value = [value]
+        return [item for item in value if isinstance(item, dict)]
+    def format_fields(item, fields):
+        return '; '.join(label + ': ' + clean(item.get(field)) for field, label in fields)
+    system, board, os, bios = (section(name) for name in ('System', 'Board', 'OS', 'BIOS'))
+    lines = ['CHAIRLIGHT — расширенные сведения о компьютере', '',
+             'Компьютер: ' + format_fields(system, [('Manufacturer', 'производитель'), ('Model', 'модель'), ('SystemType', 'тип'), ('TotalPhysicalMemory', 'ОЗУ всего, байт')]),
+             'Плата: ' + format_fields(board, [('Manufacturer', 'производитель'), ('Product', 'модель'), ('Version', 'версия')]),
+             'Windows: ' + format_fields(os, [('Caption', 'название'), ('Version', 'версия'), ('BuildNumber', 'сборка'), ('OSArchitecture', 'архитектура')]),
+             'BIOS: ' + format_fields(bios, [('Manufacturer', 'производитель'), ('SMBIOSBIOSVersion', 'версия'), ('ReleaseDate', 'дата')])]
+    groups = [
+        ('CPU', 'ПРОЦЕССОРЫ', [('Name', 'модель'), ('Manufacturer', 'производитель'), ('NumberOfCores', 'ядер'), ('NumberOfLogicalProcessors', 'потоков'), ('MaxClockSpeed', 'макс. МГц')]),
+        ('RAM', 'ОПЕРАТИВНАЯ ПАМЯТЬ', [('Manufacturer', 'производитель'), ('PartNumber', 'модель'), ('Capacity', 'объём, байт'), ('Speed', 'скорость'), ('ConfiguredClockSpeed', 'текущая скорость'), ('DeviceLocator', 'слот')]),
+        ('GPU', 'ВИДЕОКАРТЫ', [('Name', 'модель'), ('AdapterRAM', 'видеопамять, байт'), ('VideoProcessor', 'процессор'), ('DriverVersion', 'драйвер')]),
+        ('Disks', 'НАКОПИТЕЛИ', [('Model', 'модель'), ('Size', 'размер, байт'), ('InterfaceType', 'интерфейс'), ('MediaType', 'тип'), ('FirmwareRevision', 'прошивка')]),
+    ]
+    for key, title, fields in groups:
+        lines += ['', title]
+        group = items(key)
+        if not group: lines.append('Нет сведений.')
+        for item in group: lines.append('- ' + format_fields(item, fields))
+    devices = items('Devices')
+    lines += ['', f'ВСЕ УСТРОЙСТВА PLUG AND PLAY: {len(devices)}',
+              'Включая неподключённые. Наличие адаптера не доказывает совместимость с RF пульта.', '']
     if not devices: lines.append('Устройства не найдены или недоступны.')
-    for d in sorted((d for d in devices if isinstance(d, dict)), key=lambda d: (str(d.get('Class') or ''), str(d.get('Name') or ''))):
+    for d in sorted(devices, key=lambda d: (str(d.get('Class') or ''), str(d.get('Name') or ''))):
+        present = 'да' if d.get('Present') is True else 'нет' if d.get('Present') is False else 'неизвестно'
         lines += [f"[{clean(d.get('Class'))}] {clean(d.get('Name'))}",
-                  '  Состояние: ' + clean(d.get('Status')) + '; производитель: ' + clean(d.get('Manufacturer')),
+                  '  Подключено: ' + present + '; состояние: ' + clean(d.get('Status')) + '; производитель: ' + clean(d.get('Manufacturer')),
                   '  ID модели: ' + clean(d.get('Hardware')),
                   '  Драйвер: ' + clean(d.get('DriverProvider')) + ' / ' + clean(d.get('DriverVersion'))]
     warnings = data.get('Warnings') or []
-    if warnings:
-        lines += ['', 'Предупреждения:'] + ['- ' + clean(w) for w in warnings]
+    if warnings: lines += ['', 'Предупреждения:'] + ['- ' + clean(w) for w in warnings]
     lines += ['', 'Имена устройств могут содержать личные названия. Перед отправкой проверьте отчёт.',
-              'Отчёт не доказывает, что компьютер может передавать сигналы пульта.']
+              'Это список сведений, доступных Windows, а не гарантия обнаружения всех физических устройств.']
     return '\n'.join(lines)
