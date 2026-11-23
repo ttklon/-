@@ -1,4 +1,6 @@
 import unittest
+import json
+import sys
 from unittest.mock import patch
 import subprocess
 import diagnostics
@@ -34,5 +36,52 @@ class DiagnosticsTests(unittest.TestCase):
     def test_timeout(self, run):
         run.side_effect = subprocess.TimeoutExpired('powershell', 30)
         with self.assertRaises(RuntimeError): diagnostics.windows_devices()
+
+class PcInventoryTests(unittest.TestCase):
+    def test_report_uses_only_whitelisted_fields_and_redacts_mac(self):
+        data = {
+            'System': {'Manufacturer': 'Vendor', 'Model': 'Model 1', 'SerialNumber': 'SUPERSECRET'},
+            'Board': {'Manufacturer': 'Board maker', 'Product': 'B1', 'SerialNumber': 'BOARDSECRET'},
+            'OS': {'Caption': 'Windows 11', 'Version': '10.0', 'BuildNumber': '22631', 'OSArchitecture': '64-bit'},
+            'CPU': [{'Name': 'CPU'}],
+            'Devices': [{'Class': 'Bluetooth', 'Name': 'Headphones AA:BB:CC:DD:EE:FF',
+                         'Hardware': 'USB VID_1234&PID_5678', 'InstanceId': 'SERIAL-SECRET',
+                         'DriverVersion': '1.2', 'Status': 'OK'}],
+            'Warnings': ['Часть драйверов недоступна'], 'UserName': 'SECRETUSER'
+        }
+        text = diagnostics.pc_report(data)
+        self.assertIn('Windows 11', text)
+        self.assertIn('USB VID_1234&PID_5678', text)
+        self.assertIn('[MAC скрыт]', text)
+        for value in ('SUPERSECRET', 'BOARDSECRET', 'SERIAL-SECRET', 'SECRETUSER', 'AA:BB:CC:DD:EE:FF'):
+            self.assertNotIn(value, text)
+
+    @patch('diagnostics.sys.platform', 'win32')
+    @patch('diagnostics.subprocess.run')
+    def test_inventory_parses_valid_data(self, run):
+        data = {'System': {'Model': 'PC'}, 'Devices': [], 'Warnings': []}
+        run.return_value = subprocess.CompletedProcess([], 0, json.dumps(data), '')
+        self.assertEqual(diagnostics.pc_inventory()['System']['Model'], 'PC')
+
+    @patch('diagnostics.sys.platform', 'win32')
+    @patch('diagnostics.subprocess.run')
+    def test_inventory_rejects_invalid_json(self, run):
+        run.return_value = subprocess.CompletedProcess([], 0, 'not json', '')
+        with self.assertRaisesRegex(RuntimeError, 'некорректные'): diagnostics.pc_inventory()
+
+    @patch('diagnostics.sys.platform', 'win32')
+    @patch('diagnostics.subprocess.run')
+    def test_inventory_timeout_is_an_error(self, run):
+        run.side_effect = subprocess.TimeoutExpired('powershell', 90)
+        with self.assertRaises(RuntimeError): diagnostics.pc_inventory()
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Requires real Windows CIM and PnP')
+    def test_real_windows_inventory_without_printing_private_data(self):
+        data = diagnostics.pc_inventory()
+        self.assertIsInstance(data['Devices'], list)
+        self.assertTrue(data.get('OS') or data.get('Warnings'))
+        self.assertNotIn('SerialNumber', json.dumps(data))
+        self.assertNotIn('InstanceId', json.dumps(data))
+        self.assertNotIn('MacAddress', json.dumps(data))
 
 if __name__ == '__main__': unittest.main()

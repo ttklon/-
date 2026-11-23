@@ -3,7 +3,7 @@ import queue
 import tkinter as tk
 from tkinter import messagebox, filedialog
 
-from diagnostics import windows_devices, compare, report
+from diagnostics import windows_devices, compare, report, pc_inventory, pc_report
 
 BG = '#101321'
 PANEL = '#1b2033'
@@ -14,7 +14,7 @@ MUTED = '#aeb7d2'
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('ChairLight — диагностика USB')
+        self.title('ChairLight — диагностика компьютера')
         self.geometry('900x720')
         self.minsize(700, 600)
         self.configure(bg=BG)
@@ -24,9 +24,14 @@ class App(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self.close)
         root = tk.Frame(self, bg=BG, padx=26, pady=22); root.pack(fill='both', expand=True)
         self.label(root, 'CHAIRLIGHT', 21, WHITE, True).pack(anchor='w')
-        self.label(root, 'Диагностика подключения кресла по USB', 11, MUTED).pack(anchor='w', pady=(2, 14))
+        self.label(root, 'Сведения о компьютере и диагностика USB кресла', 11, MUTED).pack(anchor='w', pady=(2, 14))
         panel = tk.Frame(root, bg=PANEL, padx=18, pady=15); panel.pack(fill='x')
-        self.label(panel, 'Как проверить', 13, WHITE, True).pack(anchor='w')
+        self.label(panel, 'Сведения о компьютере', 13, WHITE, True).pack(anchor='w')
+        self.label(panel, 'Модели ПК, платы, Windows, адаптеры и драйверы. Отчёт никуда не отправляется.',
+                   10, MUTED, justify='left').pack(anchor='w', pady=(4, 6))
+        self.inventory_btn = self.button(panel, 'Собрать сведения о компьютере', self.inventory, '#8068ee')
+        self.inventory_btn.pack(anchor='w', pady=(0, 10))
+        self.label(panel, 'Дополнительно: проверка USB кресла', 12, WHITE, True).pack(anchor='w')
         self.label(panel, '1. Отключите USB кресла от компьютера.\n'
                           '2. Нажмите «Снимок без кресла» и дождитесь завершения.\n'
                           '3. Подключите USB кресла, подождите 10 секунд и нажмите «Сравнить».',
@@ -36,19 +41,21 @@ class App(tk.Tk):
         self.snapshot_btn.pack(side='left', padx=(0, 8))
         self.compare_btn = self.button(row, '2. Сравнить', self.check, '#3a4260')
         self.compare_btn.pack(side='left'); self.compare_btn.configure(state='disabled')
-        self.status = self.label(root, 'Отключите кресло и сделайте снимок.', 10, MUTED)
+        self.status = self.label(root, 'Нажмите «Собрать сведения о компьютере».', 10, MUTED)
         self.status.pack(anchor='w', pady=(12, 6))
-        self.output = tk.Text(root, bg='#191e2e', fg=WHITE, insertbackground=WHITE,
-                              relief='flat', padx=14, pady=12, wrap='word', font=('Consolas', 10))
-        self.output.pack(fill='both', expand=True)
-        self.output.insert('1.0', 'Здесь появятся результаты.\n\nПрограмма не управляет креслом: '
-                           'она проверяет появление новых устройств в Windows. '
-                           'USB может служить только для питания; этот тест не доказывает это окончательно.')
+        output_frame = tk.Frame(root, bg=BG); output_frame.pack(fill='both', expand=True)
+        scrollbar = tk.Scrollbar(output_frame); scrollbar.pack(side='right', fill='y')
+        self.output = tk.Text(output_frame, bg='#191e2e', fg=WHITE, insertbackground=WHITE,
+                              relief='flat', padx=14, pady=12, wrap='word', font=('Consolas', 10),
+                              yscrollcommand=scrollbar.set)
+        self.output.pack(side='left', fill='both', expand=True); scrollbar.configure(command=self.output.yview)
+        self.output.insert('1.0', 'Здесь появятся результаты. Программа не управляет креслом.\n\n'
+                           'Проверьте отчёт перед отправкой: имена устройств могут быть личными.')
         self.output.configure(state='disabled')
         row = tk.Frame(root, bg=BG); row.pack(fill='x', pady=(12, 0))
         self.button(row, 'Копировать', self.copy, '#3a4260').pack(side='left', padx=(0, 8))
         self.button(row, 'Сохранить отчёт', self.save, '#3a4260').pack(side='left')
-        self.label(root, 'Отчёт может содержать серийные номера устройств. Проверьте его перед отправкой.',
+        self.label(root, 'Проверьте отчёт перед отправкой: названия устройств могут содержать личные данные.',
                    9, MUTED).pack(anchor='w', pady=(8, 0))
         self.after(100, self.poll)
 
@@ -61,14 +68,26 @@ class App(tk.Tk):
                          activebackground='#6757a8', activeforeground=WHITE, disabledforeground='#888da5',
                          relief='flat', padx=14, pady=8, font=('Segoe UI', 10, 'bold'), cursor='hand2')
 
-    def run_scan(self, callback):
+    def run_scan(self, callback, operation=windows_devices):
         self.snapshot_btn.configure(state='disabled'); self.compare_btn.configure(state='disabled')
-        self.status.configure(text='Получаем список устройств Windows, подождите…')
-        future = self.pool.submit(windows_devices)
+        self.inventory_btn.configure(state='disabled')
+        self.status.configure(text='Получаем сведения Windows, подождите…')
+        future = self.pool.submit(operation)
         def done(f):
             try: self.events.put((callback, f.result(), None))
             except Exception as exc: self.events.put((callback, None, str(exc)))
         future.add_done_callback(done)
+
+    def inventory(self):
+        def done(data, error):
+            if error:
+                self.status.configure(text='Сбор сведений не выполнен.')
+                messagebox.showerror('Ошибка', error); return
+            self.output.configure(state='normal'); self.output.delete('1.0', 'end')
+            self.output.insert('1.0', pc_report(data)); self.output.configure(state='disabled')
+            self.output.see('1.0')
+            self.status.configure(text='Готово. Проверьте отчёт, затем скопируйте или сохраните его.')
+        self.run_scan(done, pc_inventory)
 
     def snapshot(self):
         def done(devices, error):
@@ -96,6 +115,7 @@ class App(tk.Tk):
             while True:
                 callback, data, error = self.events.get_nowait()
                 self.snapshot_btn.configure(state='normal')
+                self.inventory_btn.configure(state='normal')
                 callback(data, error)
                 self.compare_btn.configure(state='normal' if self.before is not None else 'disabled')
         except queue.Empty: pass
